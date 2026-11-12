@@ -1,0 +1,41 @@
+name: build-gyro
+on: workflow_dispatch
+jobs:
+  b:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: build
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          SDK=$ANDROID_HOME
+          BT=$(ls -d $SDK/build-tools/* | sort -V | tail -1)
+          AJ=$(ls $SDK/platforms/android-*/android.jar | sort -V | tail -1)
+          echo "BT=$BT"
+          aarch64-linux-gnu-gcc -static -O2 -o gyromouse gyromouse.c
+          ls -l gyromouse
+          rm -rf build
+          mkdir -p build/gen build/classes
+          $BT/aapt2 link -o build/base.apk -I $AJ --manifest AndroidManifest.xml --java build/gen --auto-add-overlay
+          javac -nowarn -source 8 -target 8 -encoding UTF-8 -classpath $AJ -d build/classes GyroMain.java $(find build/gen -name '*.java' 2>/dev/null || true)
+          cd build/classes
+          jar cf ../classes.jar .
+          cd ../..
+          $BT/d8 --release --lib $AJ --output build build/classes.jar
+          cp build/base.apk gyro.apk
+          cd build && zip -q -0 ../gyro.apk classes.dex && cd ..
+          $BT/zipalign -f -p 4 gyro.apk gyro-aligned.apk
+          keytool -genkeypair -keystore k.jks -alias k -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname CN=mod
+          $BT/apksigner sign --ks k.jks --ks-pass pass:android --key-pass pass:android --out GyroAim.apk gyro-aligned.apk
+          ls -l GyroAim.apk gyromouse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GyroAim
+          path: |
+            GyroAim.apk
+            gyromouse
