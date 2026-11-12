@@ -1,0 +1,111 @@
+name: build-gyro
+on: workflow_dispatch
+jobs:
+  b:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: build
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          SDK=$ANDROID_HOME
+          BT=$(ls -d $SDK/build-tools/* | sort -V | tail -1)
+          AJ=$(ls $SDK/platforms/android-*/android.jar | sort -V | tail -1)
+          mkdir -p app/src/app/gyro app/res/values
+          cat > app/res/values/strings.xml <<'XEOF'
+          <resources><string name="app_name">GyroAim</string></resources>
+          XEOF
+          cat > app/AndroidManifest.xml <<'XEOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="app.gyro">
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+            <application android:label="GyroAim">
+              <activity android:name=".GyroMain" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+              <service android:name=".GyroService" android:foregroundServiceType="dataSync" android:exported="false"/>
+            </application>
+          </manifest>
+          XEOF
+          cat > app/src/app/gyro/GyroMain.java <<'XEOF'
+          package app.gyro;
+
+          import android.app.*;
+          import android.content.*;
+          import android.hardware.*;
+          import android.os.*;
+          import android.widget.*;
+          import java.io.*;
+          import java.net.*;
+
+          public class GyroMain extends Activity {
+              @Override protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  LinearLayout l = new LinearLayout(this);
+                  l.setOrientation(LinearLayout.VERTICAL);
+                  l.setPadding(40, 80, 40, 40);
+                  TextView tv = new TextView(this);
+                  tv.setText("GyroAim\n1. 先在 Shizuku 里启动 gyromouse\n2. 点下面按钮");
+                  tv.setTextSize(16);
+                  Button on = new Button(this);
+                  on.setText("启动");
+                  Button off = new Button(this);
+                  off.setText("停止");
+                  l.addView(tv); l.addView(on); l.addView(off);
+                  setContentView(l);
+                  on.setOnClickListener(new View.OnClickListener() {
+                      public void onClick(View v) {
+                          startForegroundService(new Intent(GyroMain.this, GyroService.class));
+                          Toast.makeText(GyroMain.this, "已启动", Toast.LENGTH_SHORT).show();
+                      }
+                  });
+                  off.setOnClickListener(new View.OnClickListener() {
+                      public void onClick(View v) {
+                          stopService(new Intent(GyroMain.this, GyroService.class));
+                          Toast.makeText(GyroMain.this, "已停止", Toast.LENGTH_SHORT).show();
+                      }
+                  });
+              }
+          }
+
+          class GyroService extends Service implements SensorEventListener {
+              SensorManager sm;
+              Sensor gyro;
+              Socket sock;
+              DataOutputStream out;
+              long lastNs = 0;
+              float scale = 3.0f;
+
+              public IBinder onBind(Intent i) { return null; }
+
+              public int onStartCommand(Intent i, int f, int s) {
+                  NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                  String ch = "gyro";
+                  nm.createNotificationChannel(new NotificationChannel(ch, "GyroAim", NotificationManager.IMPORTANCE_LOW));
+                  Notification n = new Notification.Builder(this, ch).setContentTitle("GyroAim 运行中").setSmallIcon(android.R.drawable.ic_menu_compass).build();
+                  startForeground(1, n);
+                  sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+                  gyro = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+                  if (gyro != null) sm.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
+                  return START_STICKY;
+              }
+
+              public void onSensorChanged(SensorEvent e) {
+                  long t = System.nanoTime();
+                  if (lastNs == 0) { lastNs = t; return; }
+                  float dt = (t - lastNs) / 1000000000.0f;
+                  lastNs = t;
+                  float gx = e.values[0] * 57.29578f;
+                  float gz = e.values[2] * 57.29578f;
+                  int dx = Math.round(-gz * dt * scale);
+                  int dy = Math.round(-gx * dt * scale);
+    
